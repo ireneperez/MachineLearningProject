@@ -1,0 +1,254 @@
+---
+title: "DS8 - Machine Learning Project"
+author: "Irene Perez"
+date: "20 March 2015"
+output: html_document
+---
+
+**Synopsis**
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset). 
+
+The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. 
+
+
+The training data for this project are available here: 
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here: 
+
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+The data for this project come from this source: <http://groupware.les.inf.puc-rio.br/har>. 
+
+
+**Prepare libraries**
+
+```{r}  
+
+#Load the required Libraries
+
+library(caret)
+library(abind)
+library(arm)
+library(kernlab)
+library(klaR)
+library(rattle)
+library(randomForest)
+library(rpart)
+```
+
+***Retrieve the data set***
+
+```{r}  
+
+# Seed for pseudo-random generator and reproduceablity
+set.seed(1970)
+
+# Read the Training and Testing Data Sets...  only want to store the data files in memory
+
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+trainDT <- read.csv(url(trainUrl), na.strings=c("NA","#DIV/0!","")) 
+
+testDT <- read.csv(url(testUrl), na.strings=c("NA","#DIV/0!",""))
+
+```
+
+
+***Cleaning the data***
+
+I'm interested in variables that predict the movement. The data set contains some variables that can be removed
+
+```{r}
+
+# Step 1 - Identify Variables that are mostly NA's and remove them
+
+# A number of variable contain (a lot of) NA's. Leaving them in the set not only makes the model # creation slower, but also results in lower accuracy. These variables will be 
+# removed from the set if contains 60%+ NA values
+
+naprops <- colSums(is.na(trainDT))/nrow(trainDT) 
+mostlyNAs <- names(naprops[naprops > 0.60]) 
+
+mostlyNACols <- which(naprops > 0.60)
+
+length(mostlyNACols)  # there are 100 variables/columns with 60%+ NA values 
+
+trainDT_V1 <- trainDT[,-mostlyNACols]
+
+testDT_V1 <- testDT[,-mostlyNACols]  # variable/columns are the same in both data sets
+
+
+# Step 2 - Identify and clean Near Zero Variance Variables
+
+# some varialbes have near Xero variance which indicates that they do not contribute enough to 
+# the model, those are removed.
+
+trainDT_V2 <- trainDT_V1[,-nearZeroVar(trainDT_V1)]
+
+testDT_V2 <- testDT_V1[,-nearZeroVar(testDT_V1)]
+
+
+# Step 3 - Remove variables related to data acquisition
+
+# Variables such as id, timestamps, individual's names are not candidate predictors
+# the first 5 variable/columns from the data set are removed
+
+trainDT_V3 <- trainDT_V2[, -(1:5)]
+
+testDT_V3 <- testDT_V2[, -(1:5)]
+
+```
+
+***Spliting Train data into Train and Validation Sets***
+
+We now split the updated training dataset into a training dataset (70% of the observations) and a validation dataset (30% of the observations). This validation dataset will allow us to perform cross validation when developing our model.
+
+```{r}
+Training = createDataPartition(y = trainDT_V3$classe, p = 0.7, list = FALSE) 
+train_data = trainDT_V3[Training, ] 
+val_data = trainDT_V3[-Training, ] 
+```
+
+
+***Correlation Analysis***
+
+Identify how many correlated variables there are.
+
+```{r}
+
+Hcorr <- caret::findCorrelation(cor(train_data[,-54]),cutoff=0.8)
+length(Hcorr)
+```
+ 
+As you can see from above, many variables are highly correlated, hence, PCA will be used in the pre-processing. 
+
+```{r}
+#corMat <- cor(train_data[, -54]) 
+#corrplot(corMat, order = "FPC", method = "color", type = "lower", tl.cex = 0.8, tl.col #= rgb(0, 0, 0)) 
+```
+
+This grid shows the correlation between pairs of the predictors in our dataset. From a high-level perspective darker blue and darker red squares indicate high positive and high negative correlations, respectively. We choose to use a principal components analysis to produce a set of linearly uncorrelated variables to use as our predictors. 
+
+
+At this point, our dataset contains 54 variables, with the last column containing the 'classe' variable we are trying to predict. 
+
+```{r}
+names(train_data)
+```
+
+
+***Model especification ***
+
+To avoid overfitting and reduce out of sample errors, TrainControl is used to perform 10-fold cross validation
+
+```{r}
+tc <- trainControl(method = "cv", number = 10, verboseIter=FALSE , preProcOptions="pca", allowParallel=TRUE)
+```
+
+Five models are estimated: 
+
+1 -> Random forest
+
+```{r}
+rf <- train(train_data$classe ~ ., data = train_data, method = "rf", trControl= tc) 
+```
+
+2 & 3 -> Support Vector Machine (both radial and linear)
+
+```{r}
+svmr <- train(classe ~ ., data = train_data, method = "svmRadial", trControl= tc) 
+
+svml <- train(classe ~ ., data = train_data, method = "svmLinear", trControl= tc) 
+```
+
+4 -> Bayes Generalized linear model
+
+```{r}
+bayesglm <- train(classe ~ ., data = train_data, method = "bayesglm", trControl= tc) 
+```
+
+5 -> Logit Boosted model
+
+```{r}
+logitboost <- train(classe ~ ., data = train_data, method = "LogitBoost", trControl= tc)
+```
+
+
+
+***Accuracy comparision***
+
+```{r}
+model <- c("Random Forest", "SVM (radial)","LogitBoost","SVM (linear)", "Bayes GLM") 
+Accuracy <- c(max(rf$results$Accuracy), max(svmr$results$Accuracy),max(logitboost$results$Accuracy), max(svml$results$Accuracy),  max(bayesglm$results$Accuracy))          
+
+Kappa <- c(max(rf$results$Kappa),max(svmr$results$Kappa), max(logitboost$results$Kappa),         max(svml$results$Kappa),  max(bayesglm$results$Kappa))    
+
+performance <- cbind(model,Accuracy,Kappa)
+
+knitr::kable(performance)
+
+```
+
+Random forest provides the best results and will provide the predictions for the submission. Even if the Out of sample error cannot be estimated exactly, the in-sample error obtained through cross-validation is calculated over different test sets and should provide a better estimate of out-of sample error with respect to the case of no cross-validation.
+
+The estimated accuracy of the model is 99.7% and the estimated out-of-sample error based on our fitted model applied to the cross validation dataset is 0.3%. 
+
+***Cross Validation and Testing and Out-of-Sample Error Estimate***
+
+Apply the trained model to our cross validation test dataset. We'll see the resulting table in the 'Confusion Matrix' function's output to see how well the movel predicted/classified the values in the validation test set.
+
+```{r}
+rf_val_data <- predict(rf, val_data)
+
+Confus_val_data <- confusionMatrix(val_data$classe, rf_val_data)
+
+Confus_val_data$table 
+```
+
+
+```{r}
+accur <- postResample(val_data$classe, rf_val_data) 
+
+model_accuracy <- accur[[1]] 
+
+model_accuracy 
+
+out_of_sample_error <- 1 - model_accuracy 
+
+out_of_sample_error
+
+```
+
+The estimated out-of-sample error is 1.000 minus the model's accuracy. 
+The estimated accuracy of the model is 99.7% and the estimated out-of-sample error based on our fitted model applied to the cross validation dataset is 0.3%. 
+
+
+***Prediction of “classe” variable for the test set***
+
+Finally, we apply our model to the original testing dataset, and display the predicted results.
+
+```{r}
+rfPred <- predict(rf, testDT_V3) 
+
+rfPred
+```
+
+
+***Submission to Coursera***
+
+Function to generate files with predictions to submit for assignment
+
+```{r}
+pred_write_files = function(x){   
+  n = length(x)   
+      for(i in 1:n){     
+                  filename = paste0("problem_id_",i,".txt")     
+                  write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)   } }  
+                  
+ pred_write_files(rfPred)
+
+```
+
